@@ -1,2 +1,2 @@
-# bayesian_neural_network
+# bayesian-neural-network
 Code repo for You Zhan's dissertation
