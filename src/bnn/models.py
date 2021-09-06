@@ -8,6 +8,8 @@ from torchvision import datasets, transforms
 from tqdm import tqdm, trange
 from sklearn.metrics import roc_auc_score
 
+# for CBB and MCBB
+
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 eps = 1e-20
 
@@ -42,19 +44,19 @@ class BayesianLinear(nn.Module):
     '''
     TODO: refact initialization of parameter rho
     '''
-    def __init__(self, n_input, n_output, sigma1):
+    def __init__(self, n_input, n_output, sigma1,lower_bound, upper_bounnd):
         super().__init__()
         self.n_input = n_input
         self.n_output = n_output
 
         self.w_mu = nn.Parameter(torch.Tensor(n_output,n_input).normal_(0,math.sqrt(2/n_input))) #todo
-        #self.w_rho = nn.Parameter(torch.Tensor(n_output, n_input).uniform_(-5,-4))
-        self.w_rho = nn.Parameter(torch.Tensor(n_output, n_input).uniform_(-2.253,-2.252))
+        self.w_rho = nn.Parameter(torch.Tensor(n_output, n_input).uniform_(lower_bound,upper_bounnd))
+        #self.w_rho = nn.Parameter(torch.Tensor(n_output, n_input).uniform_(-2.253,-2.252))
         self.w = Gaussian(self.w_mu, self.w_rho)
 
         self.b_mu = nn.Parameter(torch.Tensor(n_output).normal_(0,math.sqrt(2/n_input)))
         #self.b_rho = nn.Parameter(torch.Tensor(n_output).uniform_(-5,-4))
-        self.b_rho = nn.Parameter(torch.Tensor(n_output).uniform_(-2.253,-2.252))
+        self.b_rho = nn.Parameter(torch.Tensor(n_output).uniform_(lower_bound,upper_bounnd))
         self.b = Gaussian(self.b_mu, self.b_rho)
 
         #Prior: Gaussian
@@ -209,7 +211,7 @@ class ResidualBlock(nn.Module):
   
 
 
-class BayesianResNet18(nn.Module):
+class BayesianResNet14(nn.Module):
     '''
     distinguish between batch normalisation and filter response normalisation
     '''
@@ -239,7 +241,7 @@ class BayesianResNet18(nn.Module):
         self.block6 = ResidualBlock(64,64,sigma1,FRN)
 
         self.avg_pool = nn.AvgPool2d(8)
-        self.fc = BayesianLinear(64, num_class, sigma1)
+        self.fc = BayesianLinear(64, num_class, sigma1,-2.253,-2.252)
 
     def forward(self, x, sample=False):
         out = self.conv(x)
@@ -290,9 +292,9 @@ class BayesianNetwork(nn.Module):
     '''
     def __init__(self, n_units, sigma1, T):
         super().__init__()
-        self.l1 = BayesianLinear(28*28, n_units, sigma1)
-        self.l2 = BayesianLinear(n_units, n_units, sigma1)
-        self.l3 = BayesianLinear(n_units, 10, sigma1)
+        self.l1 = BayesianLinear(28*28, n_units, sigma1, -5,-4)
+        self.l2 = BayesianLinear(n_units, n_units, sigma1,-5,-4)
+        self.l3 = BayesianLinear(n_units, 10, sigma1,-5,-4)
 
     def forward(self, x, sample=False):
         x = x.view(-1,28*28)
@@ -328,4 +330,124 @@ class BayesianNetwork(nn.Module):
         return loss, log_prior, log_variational_posterior, negative_log_likelihood, corrects
 
   
+# nonBayesian Network
+class myLinear(nn.Module):
+  def __init__(self, n_input, n_output, sigma1):
+    super().__init__()
+    self.n_input = n_input
+    self.n_output = n_output
+
+    self.w_mu = nn.Parameter(torch.Tensor(n_output,n_input).normal_(0,math.sqrt(2/n_input))) 
+    
+
+    self.b_mu = nn.Parameter(torch.Tensor(n_output).normal_(0,math.sqrt(2/n_input)))
+    
+  def forward(self, input, sample=False):
+    
+    w = self.w_mu
+    b = self.b_mu
+    
+    return F.linear(input, w, b)
+
+class myConv2D(nn.Module):
+  def __init__(self, in_channels, out_channels, sigma1, kernel_size=3, stride=1, padding=1):
+    super().__init__()
+    self.in_channels = in_channels
+    self.out_channels = out_channels
+    self.kernel_size = kernel_size
+    self.stride = stride
+    self.padding = padding
+
+    self.w_mu = nn.Parameter(torch.Tensor(out_channels,in_channels, kernel_size, kernel_size))
+    self.reset_para()
   
+  def reset_para(self):
+    nn.init.kaiming_uniform_(self.w_mu, a=math.sqrt(5))
+  
+  def forward(self, input, sample=False):
+    
+    w = self.w_mu
+    
+    return F.conv2d(input, w, bias=None, stride=self.stride, padding=self.padding)
+
+
+def myConv3x3(in_channels, out_channels, sigma1, stride=1):
+  return myConv2D(in_channels, out_channels, sigma1, kernel_size=3,stride=stride, padding=1)
+
+
+class myResidualBlock(nn.Module):
+  def __init__(self, in_channels, out_channels, sigma1, stride=1, downsample=None):
+    super().__init__()
+    self.conv1 = myConv3x3(in_channels, out_channels, sigma1, stride)
+    self.frn1 = nn.BatchNorm2d(out_channels)
+    self.tlu1 = nn.ReLU(inplace=True)
+    self.conv2 = myConv3x3(out_channels, out_channels, sigma1)
+    self.frn2 = nn.BatchNorm2d(out_channels)
+    self.tlu2 = nn.ReLU(inplace=True)
+    self.downsample = downsample
+  
+  def forward(self, x):
+    residual = x
+    out = self.conv1(x)
+    out = self.frn1(out)
+    out = self.tlu1(out)
+    out = self.conv2(out)
+    out = self.frn2(out)
+    if self.downsample:
+      residual = self.downsample(x)
+    out += residual
+    out = self.tlu2(out)
+    return out
+  
+class myResNet14(nn.Module):
+  def __init__(self, sigma1, num_class=10):
+    super().__init__()
+    self.in_channels = 16
+    self.conv = myConv3x3(3,16, sigma1)
+    self.frn = nn.BatchNorm2d(16)
+    self.tlu = nn.ReLU(inplace=True)
+
+    self.block1 = myResidualBlock(16,16,sigma1)
+    self.block2 = myResidualBlock(16,16,sigma1)
+
+    downsample1 = nn.Sequential(myConv3x3(16,32,sigma1,2), nn.BatchNorm2d(32))
+    self.block3 = myResidualBlock(16,32,sigma1,2,downsample1)
+    self.block4 = myResidualBlock(32,32,sigma1)
+
+    downsample2 = nn.Sequential(myConv3x3(32,64,sigma1,2), nn.BatchNorm2d(64))
+    self.block5 = myResidualBlock(32,64,sigma1,2,downsample2)
+    self.block6 = myResidualBlock(64,64,sigma1)
+
+    self.avg_pool = nn.AvgPool2d(8)
+    self.fc = myLinear(64, num_class, sigma1)
+
+  def forward(self, x, sample=False):
+    out = self.conv(x)
+    out = self.frn(out)
+    out = self.tlu(out)
+    out = self.block1(out)
+    out = self.block2(out)
+    out = self.block3(out)
+    out = self.block4(out)
+    out = self.block5(out)
+    out = self.block6(out)
+    out = self.avg_pool(out)
+    out = out.view(out.size(0),-1)
+    out = F.softmax(self.fc(out, sample))
+    return out
+  
+   
+  
+  def free_energy(self, input, target, batch_size, num_batches, n_samples, T):
+    negative_log_likelihood = torch.zeros(1).to(DEVICE)
+    for i in range(n_samples):
+      output = self(input, sample=True)
+      negative_log_likelihood += F.nll_loss(torch.log(output+eps), target, size_average=False)/n_samples
+
+    # new target function, not absorb T into prior
+    loss = negative_log_likelihood / T * num_batches 
+
+    corrects = output.argmax(dim=1).eq(target).sum().item()
+
+    return loss, corrects,0,0,0
+
