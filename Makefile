@@ -4,7 +4,7 @@ build:
 
 .PHONY: bash
 bash:
-	docker run -it --gpus all --rm -p 8999:8888 -v ${PWD}:/code bnn bash
+	docker run -it --rm -p 8999:8888 -v ${PWD}:/code bnn bash
 
 .PHONY: jupyter
 jupyter:
