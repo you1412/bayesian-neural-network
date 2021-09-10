@@ -1,6 +1,8 @@
 # bayesian-neural-network
 Code repo for dissertation: Cold Variational Inference in Neural Networks.
 
+All experiment notebooks are provided in the notebooks folder.
+
 ## Getting started
 Development environment is built by `docker`. Once you have docker ready, you can do following command to build up the environment and run experiments.
 ```
